@@ -60,10 +60,10 @@ impl ClipboardContext {
 				m.insert(CF_HTML, cf_html.code());
 			}
 			if let Some(cf_rtf) = cf_rtf_uint {
-				m.insert(CF_RTF, cf_rtf.get());
+				m.insert(CF_RTF, cf_rtf.into());
 			}
 			if let Some(cf_png) = cf_png_uint {
-				m.insert(CF_PNG, cf_png.get());
+				m.insert(CF_PNG, cf_png.into());
 			}
 			(m, cf_html_format)
 		};
@@ -83,6 +83,28 @@ impl ClipboardContext {
 			ContentFormat::Other(format) => clipboard_win::register_format(format).unwrap().get(),
 		}
 	}
+
+	fn with_clipboard_retry<F, R>(&self, mut operation: F) -> Result<R>
+	where
+		F: FnMut() -> std::result::Result<R, clipboard_win::ErrorCode>,
+	{
+		const MAX_ATTEMPTS: usize = 10;
+		const RETRY_DELAY: Duration = Duration::from_millis(10);
+		
+		for attempt in 0..MAX_ATTEMPTS {
+			match operation() {
+				Ok(result) => return Ok(result),
+				Err(err) if err.raw_code() == 1418 && attempt < MAX_ATTEMPTS - 1 => {
+					// Thread has no message queue - retry after a short delay
+					thread::sleep(RETRY_DELAY);
+					continue;
+				}
+				Err(err) => return Err(err.into()),
+			}
+		}
+		
+		Err(ClipboardError::ThreadNoMessageQueue)
+	}
 }
 
 impl<T: ClipboardHandler> ClipboardWatcherContext<T> {
@@ -100,7 +122,7 @@ impl<T: ClipboardHandler> ClipboardWatcherContext<T> {
 impl Clipboard for ClipboardContext {
 	fn available_formats(&self) -> Result<Vec<String>> {
 		let _clip = ClipboardWin::new_attempts(10)
-			.map_err(|code| ClipboardError::WindowsClipboardError { code })?;
+			.map_err(|code| ClipboardError::WindowsClipboardError { code: code.raw_code() })?;
 		let format_count = clipboard_win::count_formats();
 		if format_count.is_none() {
 			return Ok(Vec::new());
@@ -149,10 +171,10 @@ impl Clipboard for ClipboardContext {
 
 	fn clear(&self) -> Result<()> {
 		let _clip = ClipboardWin::new_attempts(10)
-			.map_err(|code| ClipboardError::WindowsClipboardError { code })?;
+			.map_err(|code| ClipboardError::WindowsClipboardError { code: code.raw_code() })?;
 		let res = clipboard_win::empty();
 		if let Err(e) = res {
-			return Err(ClipboardError::WindowsClipboardError { code: e.get() });
+			return Err(ClipboardError::WindowsClipboardError { code: e.raw_code() });
 		}
 		Ok(())
 	}
@@ -162,11 +184,11 @@ impl Clipboard for ClipboardContext {
 		if format_uint.is_none() {
 			return Err(ClipboardError::InvalidFormat(format.to_string()));
 		}
-		let format_uint = format_uint.unwrap().get();
-		let buffer = get_clipboard(formats::RawData(format_uint));
+		let format_uint = format_uint.unwrap();
+		let buffer = get_clipboard(formats::RawData(format_uint.into()));
 		match buffer {
 			Ok(data) => Ok(data),
-			Err(e) => Err(ClipboardError::WindowsClipboardError { code: e.get() }),
+			Err(e) => Err(ClipboardError::WindowsClipboardError { code: e.raw_code() }),
 		}
 	}
 
@@ -174,7 +196,7 @@ impl Clipboard for ClipboardContext {
 		let string: SysResult<String> = get_clipboard(formats::Unicode);
 		match string {
 			Ok(s) => Ok(s),
-			Err(e) => Err(ClipboardError::WindowsClipboardError { code: e.get() }),
+			Err(e) => Err(ClipboardError::WindowsClipboardError { code: e.raw_code() }),
 		}
 	}
 
@@ -196,7 +218,7 @@ impl Clipboard for ClipboardContext {
 				}
 				Err(ClipboardError::InvalidFormat("HTML".to_string()))
 			}
-			Err(e) => Err(ClipboardError::WindowsClipboardError { code: e.get() }),
+			Err(e) => Err(ClipboardError::WindowsClipboardError { code: e.raw_code() }),
 		}
 	}
 
@@ -206,24 +228,19 @@ impl Clipboard for ClipboardContext {
 			let image_raw_data = self.get_buffer(CF_PNG)?;
 			RustImageData::from_bytes(&image_raw_data)
 		} else if clipboard_win::is_format_avail(formats::CF_DIBV5) {
-			let res = get_clipboard(formats::RawData(formats::CF_DIBV5));
-			match res {
-				Ok(data) => {
-					let decoder =
-						{ BmpDecoder::new_without_file_header(Cursor::new(data.as_slice())) };
-					let decoder = decoder.map_err(|e| ClipboardError::ImageError(e.to_string()))?;
-					let dynamic_image = DynamicImage::from_decoder(decoder)
-						.map_err(|e| ClipboardError::ImageError(e.to_string()))?;
-					Ok(RustImageData::from_dynamic_image(dynamic_image))
-				}
-				Err(e) => Err(ClipboardError::WindowsClipboardError { code: e.get() }),
-			}
+			let res = self.with_clipboard_retry(|| {
+				get_clipboard(formats::RawData(formats::CF_DIBV5))
+			})?;
+			let decoder = BmpDecoder::new_without_file_header(Cursor::new(res.as_slice()))
+				.map_err(|e| ClipboardError::ImageError(e.to_string()))?;
+			let dynamic_image = DynamicImage::from_decoder(decoder)
+				.map_err(|e| ClipboardError::ImageError(e.to_string()))?;
+			Ok(RustImageData::from_dynamic_image(dynamic_image))
 		} else if clipboard_win::is_format_avail(formats::CF_DIB) {
-			let res = get_clipboard(formats::Bitmap);
-			match res {
-				Ok(data) => RustImageData::from_bytes(&data),
-				Err(e) => Err(ClipboardError::WindowsClipboardError { code: e.get() }),
-			}
+			let res = self.with_clipboard_retry(|| {
+				get_clipboard(formats::Bitmap)
+			})?;
+			RustImageData::from_bytes(&res)
 		} else {
 			Err(ClipboardError::NoImageData)
 		}
@@ -326,7 +343,7 @@ impl Clipboard for ClipboardContext {
 
 	fn set_text(&self, text: String) -> Result<()> {
 		let res = set_clipboard(formats::Unicode, text);
-		res.map_err(|e| ClipboardError::WindowsClipboardError { code: e.get() })
+		res.map_err(|e| ClipboardError::WindowsClipboardError { code: e.raw_code() })
 	}
 
 	fn set_rich_text(&self, text: String) -> Result<()> {
@@ -344,12 +361,15 @@ impl Clipboard for ClipboardContext {
 	}
 
 	fn set_image(&self, image: RustImageData) -> Result<()> {
-		let _clip = ClipboardWin::new_attempts(10)
-			.map_err(|code| ClipboardError::WindowsClipboardError { code })?;
+		self.with_clipboard_retry(|| {
+			ClipboardWin::new_attempts(10)
+		})?;
+		
 		let res = clipboard_win::empty();
 		if let Err(e) = res {
-			return Err(ClipboardError::WindowsClipboardError { code: e.get() });
+			return Err(ClipboardError::WindowsClipboardError { code: e.raw_code() });
 		}
+		
 		// chromium source code
 		// @link {https://source.chromium.org/chromium/chromium/src/+/main:ui/base/clipboard/clipboard_win.cc;l=771;drc=2a5aaed0ff3a0895c8551495c2656ed49baf742c;bpv=0;bpt=1}
 		let cf_png_format = self.format_map.get(CF_PNG);

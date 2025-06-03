@@ -12,16 +12,19 @@ fn test_string() {
 	let test_plain_txt = "hell@$#%^&U都98好的😊o Rust!!!";
 	ctx.set_text(test_plain_txt.to_string()).unwrap();
 	assert!(ctx.has(ContentFormat::Text));
+	std::thread::sleep(std::time::Duration::from_millis(100));
 	assert_eq!(ctx.get_text().unwrap(), test_plain_txt);
 
 	let test_rich_txt = "\x1b[1m\x1b[4m\x1b[31mHello, Rust!\x1b[0m";
 	ctx.set_rich_text(test_rich_txt.to_string()).unwrap();
 	assert!(ctx.has(ContentFormat::Rtf));
+	std::thread::sleep(std::time::Duration::from_millis(100));
 	assert_eq!(ctx.get_rich_text().unwrap(), test_rich_txt);
 
 	let test_html = "<html><body><h1>Hello, Rust!</h1></body></html>";
 	ctx.set_html(test_html.to_string()).unwrap();
 	assert!(ctx.has(ContentFormat::Html));
+	std::thread::sleep(std::time::Duration::from_millis(100));
 	assert_eq!(ctx.get_html().unwrap(), test_html);
 
 	let contents: Vec<ClipboardContent> = vec![
@@ -33,6 +36,7 @@ fn test_string() {
 	assert!(ctx.has(ContentFormat::Text));
 	assert!(ctx.has(ContentFormat::Rtf));
 	assert!(ctx.has(ContentFormat::Html));
+	std::thread::sleep(std::time::Duration::from_millis(100));
 	assert_eq!(ctx.get_text().unwrap(), test_plain_txt);
 	assert_eq!(ctx.get_rich_text().unwrap(), test_rich_txt);
 	assert_eq!(ctx.get_html().unwrap(), test_html);

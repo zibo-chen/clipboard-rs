@@ -75,7 +75,10 @@ pub enum ClipboardError {
 	X11PropertyError(String),
 
 	#[error("Windows clipboard error: {code}")]
-	WindowsClipboardError { code: u32 },
+	WindowsClipboardError { code: i32 },
+
+	#[error("Thread has no message queue (error 1418) - clipboard access may require a window message loop")]
+	ThreadNoMessageQueue,
 
 	#[error("macOS pasteboard error: {0}")]
 	MacOsPasteboardError(String),
@@ -114,7 +117,10 @@ impl From<String> for ClipboardError {
 #[cfg(target_os = "windows")]
 impl From<clipboard_win::ErrorCode> for ClipboardError {
 	fn from(err: clipboard_win::ErrorCode) -> Self {
-		ClipboardError::WindowsClipboardError { code: err.get() }
+		match err.raw_code() {
+			1418 => ClipboardError::ThreadNoMessageQueue,
+			code => ClipboardError::WindowsClipboardError { code },
+		}
 	}
 }
 
