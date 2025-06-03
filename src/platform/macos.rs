@@ -1,5 +1,8 @@
-use crate::common::{Result, RustImage, RustImageData};
-use crate::{Clipboard, ClipboardContent, ClipboardHandler, ClipboardWatcher, ContentFormat};
+use std::ffi::c_void;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::time::Duration;
+use std::vec;
+
 use objc2::rc::Retained;
 use objc2::AllocAnyThread;
 use objc2::{rc::autoreleasepool, runtime::ProtocolObject};
@@ -9,10 +12,10 @@ use objc2_app_kit::{
 	NSPasteboardTypeTIFF, NSPasteboardWriting,
 };
 use objc2_foundation::{NSArray, NSData, NSString};
-use std::ffi::c_void;
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::time::Duration;
-use std::vec;
+
+use crate::common::{Result, RustImage, RustImageData};
+use crate::error::ClipboardError;
+use crate::{Clipboard, ClipboardContent, ClipboardHandler, ClipboardWatcher, ContentFormat};
 
 pub struct ClipboardContext {
 	pasteboard: Retained<NSPasteboard>,
@@ -99,14 +102,17 @@ impl ClipboardContext {
 
 	fn plain(&self, r#type: &NSPasteboardType) -> Result<String> {
 		autoreleasepool(|_| {
-			let contents = unsafe { self.pasteboard.pasteboardItems() }
-				.ok_or("NSPasteboard#pasteboardItems errored")?;
+			let contents = unsafe { self.pasteboard.pasteboardItems() }.ok_or(
+				ClipboardError::MacOsPasteboardError(
+					"NSPasteboard#pasteboardItems errored".to_string(),
+				),
+			)?;
 			for item in contents {
 				if let Some(string) = unsafe { item.stringForType(r#type) } {
 					return Ok(string.to_string());
 				}
 			}
-			Err("No string found".into())
+			Err(ClipboardError::FormatNotAvailable)
 		})
 	}
 
@@ -192,7 +198,7 @@ impl ClipboardContext {
 				.pasteboard
 				.writeObjects(&NSArray::from_retained_slice(&write_objects))
 			{
-				return Err("writeObjects failed");
+				return Err(ClipboardError::WriteFailed);
 			}
 			Ok(())
 		})?;
@@ -206,7 +212,9 @@ unsafe impl Sync for ClipboardContext {}
 
 impl Clipboard for ClipboardContext {
 	fn available_formats(&self) -> Result<Vec<String>> {
-		let types = unsafe { self.pasteboard.types() }.ok_or("NSPasteboard#types errored")?;
+		let types = unsafe { self.pasteboard.types() }.ok_or(
+			ClipboardError::MacOsPasteboardError("NSPasteboard#types errored".to_string()),
+		)?;
 		let res = types.iter().map(|t| t.to_string()).collect();
 		Ok(res)
 	}
@@ -257,7 +265,7 @@ impl Clipboard for ClipboardContext {
 		if let Some(data) = unsafe { self.pasteboard.dataForType(&NSString::from_str(format)) } {
 			return Ok(data.to_vec());
 		}
-		Err("no data".into())
+		Err(ClipboardError::FormatNotAvailable)
 	}
 
 	fn get_text(&self) -> Result<String> {
@@ -287,7 +295,7 @@ impl Clipboard for ClipboardContext {
 					return RustImageData::from_bytes(&data.to_vec());
 				}
 			};
-			Err("no image data".into())
+			Err(ClipboardError::NoImageData)
 		})
 	}
 
@@ -296,7 +304,6 @@ impl Clipboard for ClipboardContext {
 		let ns_array = unsafe { self.pasteboard.propertyListForType(NSFilenamesPboardType) };
 		unsafe {
 			if let Some(array) = ns_array {
-				// cast to NSArray<NSString>
 				let array: Retained<NSArray<NSString>> = Retained::cast_unchecked(array);
 				array.iter().for_each(|item| {
 					res.push(item.to_string());
@@ -304,15 +311,18 @@ impl Clipboard for ClipboardContext {
 			}
 		}
 		if res.is_empty() {
-			return Err("no files".into());
+			return Err(ClipboardError::NoFileData);
 		}
 		Ok(res)
 	}
 
 	fn get(&self, formats: &[ContentFormat]) -> Result<Vec<ClipboardContent>> {
 		autoreleasepool(|_| {
-			let contents = unsafe { self.pasteboard.pasteboardItems() }
-				.ok_or("NSPasteboard#pasteboardItems errored")?;
+			let contents = unsafe { self.pasteboard.pasteboardItems() }.ok_or(
+				ClipboardError::MacOsPasteboardError(
+					"NSPasteboard#pasteboardItems errored".to_string(),
+				),
+			)?;
 			let mut results = Vec::new();
 			for format in formats {
 				for item in contents.iter() {
@@ -392,7 +402,7 @@ impl Clipboard for ClipboardContext {
 
 	fn set_files(&self, files: Vec<String>) -> Result<()> {
 		if files.is_empty() {
-			return Err("file list is empty".into());
+			return Err(ClipboardError::EmptyContent);
 		}
 		let _ = self.clear();
 		self.set_files(&files)
@@ -400,9 +410,7 @@ impl Clipboard for ClipboardContext {
 
 	fn set(&self, contents: Vec<ClipboardContent>) -> Result<()> {
 		if contents.is_empty() {
-			return Err(
-				"contents is empty, if you want to clear clipboard, please use clear method".into(),
-			);
+			return Err(ClipboardError::EmptyContent);
 		}
 		self.write_to_clipboard(&contents, true)
 	}

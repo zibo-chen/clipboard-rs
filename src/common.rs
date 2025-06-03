@@ -1,8 +1,10 @@
 use image::imageops::FilterType;
 use image::{ColorType, DynamicImage, GenericImageView, ImageFormat, RgbaImage};
-use std::error::Error;
 use std::io::Cursor;
-pub type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync + 'static>>;
+
+use crate::error::ClipboardError;
+
+pub type Result<T> = std::result::Result<T, ClipboardError>;
 
 pub trait ContentData {
 	fn get_format(&self) -> ContentFormat;
@@ -61,13 +63,13 @@ impl ContentData for ClipboardContent {
 			ClipboardContent::Text(data) => Ok(data),
 			ClipboardContent::Rtf(data) => Ok(data),
 			ClipboardContent::Html(data) => Ok(data),
-			ClipboardContent::Image(_) => Err("can't convert image to string".into()),
+			ClipboardContent::Image(_) => Err(ClipboardError::DataTypeMismatch),
 			ClipboardContent::Files(data) => {
 				// use first file path as data
 				if let Some(path) = data.first() {
 					Ok(path)
 				} else {
-					Err("content is empty".into())
+					Err(ClipboardError::EmptyContent)
 				}
 			}
 			ClipboardContent::Other(_, data) => std::str::from_utf8(data).map_err(|e| e.into()),
@@ -203,7 +205,7 @@ impl RustImage for RustImageData {
 					data: Some(resized),
 				})
 			}
-			None => Err("image is empty".into()),
+			None => Err(ClipboardError::NoImageData),
 		}
 	}
 
@@ -217,7 +219,7 @@ impl RustImage for RustImageData {
 					data: Some(resized),
 				})
 			}
-			None => Err("image is empty".into()),
+			None => Err(ClipboardError::NoImageData),
 		}
 	}
 
@@ -227,21 +229,21 @@ impl RustImage for RustImageData {
 				image.save(path)?;
 				Ok(())
 			}
-			None => Err("image is empty".into()),
+			None => Err(ClipboardError::NoImageData),
 		}
 	}
 
 	fn get_dynamic_image(&self) -> Result<DynamicImage> {
 		match &self.data {
 			Some(image) => Ok(image.clone()),
-			None => Err("image is empty".into()),
+			None => Err(ClipboardError::NoImageData),
 		}
 	}
 
 	fn to_rgba8(&self) -> Result<RgbaImage> {
 		match &self.data {
 			Some(image) => Ok(image.to_rgba8()),
-			None => Err("image is empty".into()),
+			None => Err(ClipboardError::NoImageData),
 		}
 	}
 
@@ -251,7 +253,7 @@ impl RustImage for RustImageData {
 		target_color_type: ColorType,
 		format: ImageFormat,
 	) -> Result<RustImageBuffer> {
-		let image = self.data.as_ref().ok_or("image is empty")?;
+		let image = self.data.as_ref().ok_or(ClipboardError::NoImageData)?;
 
 		let mut bytes = Vec::new();
 		match (image.color(), target_color_type) {

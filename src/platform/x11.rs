@@ -1,8 +1,3 @@
-use crate::{
-	common::{Result, RustImage},
-	ClipboardContent, ClipboardHandler, ContentFormat, RustImageData,
-};
-use crate::{Clipboard, ClipboardWatcher};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::{
 	sync::{Arc, RwLock},
@@ -23,6 +18,13 @@ use x11rb::{
 	wrapper::ConnectionExt as _,
 	COPY_DEPTH_FROM_PARENT, CURRENT_TIME,
 };
+
+use crate::{
+	common::{Result, RustImage},
+	error::ClipboardError,
+	ClipboardContent, ClipboardHandler, ContentFormat, RustImageData,
+};
+use crate::{Clipboard, ClipboardWatcher};
 
 x11rb::atom_manager! {
 	pub Atoms: AtomCookies {
@@ -133,7 +135,7 @@ impl InnerContext {
 					)?;
 					success = true;
 				}
-				Err(_) => return Err("Failed to read clipboard data".into()),
+				Err(_) => return Err(ClipboardError::ReadFailed),
 			}
 		} else {
 			let reader = self.wait_write_data.read();
@@ -153,7 +155,7 @@ impl InnerContext {
 						None => false,
 					};
 				}
-				Err(_) => return Err("Failed to read clipboard data".into()),
+				Err(_) => return Err(ClipboardError::ReadFailed),
 			}
 		}
 		// on failure, we notify the requester of it
@@ -206,7 +208,7 @@ impl InnerContext {
 				.map(|(timeout, time)| (Instant::now() - time) >= timeout)
 				.unwrap_or(false)
 			{
-				return Err("Timeout while waiting for clipboard data".into());
+				return Err(ClipboardError::Timeout);
 			}
 
 			let (event, seq) = match ctx.conn.poll_for_event_with_sequence()? {
@@ -257,7 +259,7 @@ impl InnerContext {
 						is_incr = true;
 						continue;
 					} else if reply.type_ != target && reply.type_ != atoms.ATOM {
-						return Err("Clipboard data type mismatch".into());
+						return Err(ClipboardError::DataTypeMismatch);
 					}
 					buff.extend_from_slice(&reply.value);
 					break;
@@ -361,7 +363,7 @@ impl ClipboardContext {
 				writer.clear();
 				writer.extend(data);
 			}
-			Err(_) => return Err("Failed to write clipboard data".into()),
+			Err(_) => return Err(ClipboardError::WriteFailed),
 		}
 		let ctx = &self.inner.server_for_write;
 		let atoms = ctx.atoms;
@@ -381,7 +383,7 @@ impl ClipboardContext {
 		{
 			Ok(())
 		} else {
-			Err("Failed to take ownership of the clipboard".into())
+			Err(ClipboardError::OwnershipFailed)
 		}
 	}
 }
@@ -393,7 +395,7 @@ fn process_server_req(context: &InnerContext) -> Result<()> {
 			.server_for_write
 			.conn
 			.wait_for_event()
-			.map_err(|e| format!("wait_for_event error: {:?}", e))?
+			.map_err(|e| ClipboardError::X11ConnectionError(e.to_string()))?
 		{
 			Event::DestroyNotify(_) => {
 				// This window is being destroyed.
@@ -410,7 +412,7 @@ fn process_server_req(context: &InnerContext) -> Result<()> {
 						.wait_write_data
 						.write()
 						.map(|mut writer| writer.clear())
-						.map_err(|e| format!("write clipboard data error: {:?}", e))?;
+						.map_err(|_| ClipboardError::WriteFailed)?;
 				}
 			}
 			Event::SelectionRequest(event) => {
@@ -489,7 +491,7 @@ impl Clipboard for ClipboardContext {
 		let atom = self.inner.server.get_atom(format);
 		match atom {
 			Ok(atom) => self.read(&atom),
-			Err(_) => Err("Invalid format".into()),
+			Err(_) => Err(ClipboardError::InvalidFormat(format.to_string())),
 		}
 	}
 
@@ -528,10 +530,10 @@ impl Clipboard for ClipboardContext {
 				let image = RustImageData::from_bytes(&bytes);
 				match image {
 					Ok(image) => Ok(image),
-					Err(_) => Err("Invalid image data".into()),
+					Err(_) => Err(ClipboardError::InvalidImageData),
 				}
 			}
-			Err(_) => Err("No image data found".into()),
+			Err(_) => Err(ClipboardError::NoImageData),
 		}
 	}
 
