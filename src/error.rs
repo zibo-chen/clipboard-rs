@@ -105,6 +105,12 @@ impl From<Box<dyn std::error::Error + Send + Sync + 'static>> for ClipboardError
 	}
 }
 
+impl From<String> for ClipboardError {
+	fn from(err: String) -> Self {
+		ClipboardError::Internal(err)
+	}
+}
+
 #[cfg(target_os = "windows")]
 impl From<clipboard_win::ErrorCode> for ClipboardError {
 	fn from(err: clipboard_win::ErrorCode) -> Self {
@@ -153,6 +159,21 @@ impl From<x11rb::errors::ConnectionError> for ClipboardError {
 ))]
 impl From<x11rb::errors::ReplyOrIdError> for ClipboardError {
 	fn from(err: x11rb::errors::ReplyOrIdError) -> Self {
+		ClipboardError::X11ConnectionError(err.to_string())
+	}
+}
+
+#[cfg(all(
+	unix,
+	not(any(
+		target_os = "macos",
+		target_os = "ios",
+		target_os = "android",
+		target_os = "emscripten"
+	))
+))]
+impl From<x11rb::errors::ConnectError> for ClipboardError {
+	fn from(err: x11rb::errors::ConnectError) -> Self {
 		ClipboardError::X11ConnectionError(err.to_string())
 	}
 }
